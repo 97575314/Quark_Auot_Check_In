@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import urllib.parse
 import requests
 
 
@@ -9,15 +10,57 @@ def send(title, message):
 
 
 def get_env():
-    """读取 COOKIE_QUARK，支持按换行或 && 分隔多个账号。"""
+    """读取 COOKIE_QUARK，支持以下格式：
+    1) user=xxx; kps=...; sign=...; vcode=...;
+    2) 多账号以换行或 && 分隔
+    3) 直接粘贴完整的夸克请求 URL
+    4) 直接粘贴 kps=...&sign=...&vcode=...
+    """
     raw = os.getenv("COOKIE_QUARK", "").strip()
     if not raw:
         print("❌未添加COOKIE_QUARK变量")
         send("夸克自动签到", "❌未添加COOKIE_QUARK变量")
         sys.exit(0)
 
-    # 兼容：多账号用 \n 或 && 分隔；单账号也兼容直接传入
     parts = []
+
+    # 兼容：直接粘贴完整 URL
+    if "https://" in raw or "http://" in raw:
+        for item in re.split(r"(?:\n|&&)", raw):
+            item = item.strip()
+            if not item:
+                continue
+            url = item
+            if "?" in url:
+                q = url.split("?", 1)[1]
+                if "&" in q or "=" in q:
+                    params = urllib.parse.parse_qs(q, keep_blank_values=True)
+                    record = {k: v[0] for k, v in params.items() if v}
+                    if "kps" in record or "sign" in record or "vcode" in record:
+                        parts.append(record)
+                        continue
+            # 若 URL 没有可解析参数，保留原始值
+            parts.append(item)
+        return parts
+
+    # 兼容：直接粘贴 query string
+    if "kps=" in raw and "sign=" in raw and "vcode=" in raw and "=" in raw:
+        entries = re.split(r"(?:\n|&&)", raw)
+        for entry in entries:
+            entry = entry.strip()
+            if not entry:
+                continue
+            if "?" in entry:
+                entry = entry.split("?", 1)[1]
+            params = urllib.parse.parse_qs(entry, keep_blank_values=True)
+            record = {k: v[0] for k, v in params.items() if v}
+            if "kps" in record or "sign" in record or "vcode" in record:
+                parts.append(record)
+                continue
+            parts.append(entry)
+        return parts
+
+    # 兼容：传统格式 user=xxx; kps=...; sign=...; vcode=...;
     for item in re.split(r"(?:\n|&&)", raw):
         item = item.strip()
         if item:
@@ -54,7 +97,7 @@ class Quark:
         '''
         获取用户当前的签到信息
         '''
-        url = "https://drive-m.quark.cn/1/clouddrive/capacity/growth/info"
+        url = "https://drive-member.quark.cn/1/clouddrive/capacity/growth/info"
         querystring = {
             "pr": "ucpro",
             "fr": "android",
@@ -62,9 +105,11 @@ class Quark:
             "sign": self.param.get('sign'),
             "vcode": self.param.get('vcode')
         }
+        q = urllib.parse.urlencode(querystring)
+        full_url = f"{url}?{q}"
         try:
             response = requests.get(url=url, params=querystring, timeout=20)
-            print(f"[DEBUG] get_growth_info status={response.status_code} url={url}")
+            print(f"[DEBUG] get_growth_info status={response.status_code} url={full_url}")
             payload = response.json()
             print(f"[DEBUG] get_growth_info payload={payload}")
             if payload.get("data"):
@@ -78,7 +123,7 @@ class Quark:
         '''
         执行签到请求
         '''
-        url = "https://drive-m.quark.cn/1/clouddrive/capacity/growth/sign"
+        url = "https://drive-member.quark.cn/1/clouddrive/capacity/growth/sign"
         querystring = {
             "pr": "ucpro",
             "fr": "android",
@@ -98,24 +143,6 @@ class Quark:
         except Exception as e:
             print(f"[ERROR] get_growth_sign exception: {e}")
             return False, str(e)
-
-    def queryBalance(self):
-        '''
-        查询抽奖余额
-        '''
-        url = "https://coral2.quark.cn/currency/v1/queryBalance"
-        querystring = {
-            "moduleCode": "1f3563d38896438db994f118d4ff53cb",
-            "kps": self.param.get('kps'),
-        }
-        try:
-            response = requests.get(url=url, params=querystring, timeout=20)
-            payload = response.json()
-            if payload.get("data"):
-                return payload["data"].get("balance")
-            return payload.get("msg", "查询余额失败")
-        except Exception as e:
-            return str(e)
 
     def do_sign(self):
         '''
@@ -157,19 +184,42 @@ class Quark:
 
 
 def parse_cookie_block(raw_block):
-    """解析单个账号 Cookie 块。支持多种常见分隔格式。"""
-    clean = raw_block.strip().replace(" ", "")
-    if not clean:
+    """从单个 Cookie 块中解析出字典，兼容完整 URL / query string / semicolon 格式。"""
+    if isinstance(raw_block, dict):
+        return raw_block
+
+    block = str(raw_block).strip()
+    if not block:
         return {}
 
-    user_data = {}
+    # 直接是 URL
+    if "https://" in block or "http://" in block:
+        url = block
+        if "?" in url:
+            query = url.split("?", 1)[1]
+            params = urllib.parse.parse_qs(query, keep_blank_values=True)
+            return {k: v[0] for k, v in params.items() if v}
+        return {}
+
+    # 直接是 kps=...&sign=...&vcode=...
+    if "kps=" in block and "sign=" in block and "vcode=" in block and "=" in block:
+        if "?" in block:
+            block = block.split("?", 1)[1]
+        params = urllib.parse.parse_qs(block, keep_blank_values=True)
+        return {k: v[0] for k, v in params.items() if v}
+
+    # 兼容 user=xxx; kps=...; sign=...; vcode=...;
+    clean = block.replace(" ", "")
+    data = {}
     for item in clean.split(';'):
         if not item or '=' not in item:
             continue
         key, value = item.split('=', 1)
         if key:
-            user_data[key] = value
-    return user_data
+            data[key] = value
+    if all(k in data for k in ('kps', 'sign', 'vcode')):
+        return data
+    return data
 
 
 def main():
@@ -179,9 +229,9 @@ def main():
 
     for i, cookie_block in enumerate(cookie_quark, start=1):
         user_data = parse_cookie_block(cookie_block)
-        if not user_data:
-            msg += f"🙍🏻‍♂️ 第{i}个账号\n❌ Cookie 格式异常，未解析到有效参数\n\n"
-            print(f"[WARN] 第{i}个账号 Cookie 格式异常，未解析到有效参数")
+        if not user_data or not all(k in user_data for k in ('kps', 'sign', 'vcode')):
+            msg += f"🙍🏻‍♂️ 第{i}个账号\n❌ Cookie 格式异常，未解析到 kps/sign/vcode\n\n"
+            print(f"[WARN] 第{i}个账号 Cookie 格式异常，未解析到 kps/sign/vcode: {cookie_block[:120]}")
             continue
 
         print(f"\n==== 第{i}个账号开始处理 ====")
