@@ -7,43 +7,7 @@ on:
   workflow_dispatch:      # 允许手动触发
 
 jobs:
-  check-if-already-signed:
-    runs-on: ubuntu-latest
-    outputs:
-      skip: ${{ steps.check.outputs.skip }}
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v3
-
-      - name: 恢复签到成功记录缓存
-        id: cache-success-restore
-        uses: actions/cache@v4
-        with:
-          path: .last_success_date
-          key: last-success-marker
-
-      - name: 判断是否已签到
-        id: check
-        run: |
-          current_date=$(TZ='Asia/Shanghai' date '+%Y-%m-%d')
-          echo "当前北京时间: $current_date"
-
-          if [ -f .last_success_date ]; then
-            last_date=$(cat .last_success_date)
-            echo "上次签到日期: $last_date"
-            if [ "$last_date" = "$current_date" ]; then
-              echo "今天已成功签到，跳过执行。"
-              echo "skip=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-
-          echo "今天尚未签到，继续执行。"
-          echo "skip=true" >> "$GITHUB_OUTPUT"
-
   sign-in:
-    needs: check-if-already-signed
-    if: needs.check-if-already-signed.outputs.skip == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
@@ -75,20 +39,6 @@ jobs:
         env:
           COOKIE_QUARK: ${{ secrets.COOKIE_QUARK }}
         run: python checkIn_Quark.py
-
-      - name: 标记今天签到成功
-        if: success()
-        run: |
-          date_str=$(TZ='Asia/Shanghai' date '+%Y-%m-%d')
-          echo "$date_str" > .last_success_date
-          echo "已记录成功签到日期: $date_str"
-
-      - name: 保存成功记录到缓存
-        if: success()
-        uses: actions/cache@v4
-        with:
-          path: .last_success_date
-          key: last-success-marker
 
       - name: 清理旧的工作流记录
         uses: Mattraks/delete-workflow-runs@main
